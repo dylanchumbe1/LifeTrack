@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LifeTrack V5 (Final)</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js"></script>
+<style>
+body { font-family: Arial; background:#0f172a; color:#e2e8f0; padding:20px; }
+.card { background:#1e293b; padding:15px; border-radius:12px; margin-bottom:15px; }
+button { padding:8px; margin:5px; border:none; border-radius:8px; cursor:pointer; }
+input, select { padding:6px; margin:5px; border-radius:6px; border:none; }
+</style>
+</head>
+<body>
+<h1>LifeTrack V5</h1>
+
+<div class="card">
+<h2>Login</h2>
+<input id="email" placeholder="Email">
+<input id="password" type="password" placeholder="Password">
+<button onclick="signup()">Sign Up</button>
+<button onclick="login()">Login</button>
+<button onclick="logout()">Logout</button>
+<p id="user"></p>
+</div>
+
+<div class="card">
+<h2>Activity Tracker</h2>
+<select id="activity"></select>
+<button onclick="startTimer()">Start</button>
+<button onclick="stopTimer()">Stop</button>
+<p id="timer"></p>
+</div>
+
+<div class="card">
+<h2>Analytics</h2>
+<canvas id="chart"></canvas>
+<p id="dailyScore"></p>
+<p id="weeklyScore"></p>
+<p id="grade"></p>
+<p id="identity"></p>
+<p id="prediction"></p>
+<p id="insight"></p>
+</div>
+
+<script>
+// 🔥 INSERT FIREBASE CONFIG
+const firebaseConfig = { apiKey:"YOUR_KEY", authDomain:"YOUR_DOMAIN", projectId:"YOUR_ID" };
+const app = firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db = firebase.firestore();
+
+let userId=null;
+const activities=["Prayer","Bible Study","Academic Study","Earning Online","Sermons","Other"];
+activities.forEach(a=>{ let o=document.createElement('option'); o.text=a; activity.add(o); });
+
+let timer, sec=0, current="";
+
+function signup(){ auth.createUserWithEmailAndPassword(email.value,password.value); }
+function login(){ auth.signInWithEmailAndPassword(email.value,password.value); }
+function logout(){ auth.signOut(); }
+
+auth.onAuthStateChanged(u=>{ if(u){ userId=u.uid; user.innerText=u.email; loadData(); }});
+
+function startTimer(){ current=activity.value; timer=setInterval(()=>{sec++; timer.innerText=sec+" sec"},1000); }
+function stopTimer(){ clearInterval(timer); saveActivity(); sec=0; }
+
+async function saveActivity(){
+let today=new Date().toISOString().split('T')[0];
+await db.collection('users').doc(userId).set({ [today+"."+current]: firebase.firestore.FieldValue.increment(sec) },{merge:true});
+loadData();
+}
+
+function weights(){ return {"Prayer":0.2,"Bible Study":0.2,"Academic Study":0.15,"Earning Online":0.15,"Sermons":0.1,"Other":0.2}; }
+function targets(){ return {"Prayer":90,"Bible Study":60,"Academic Study":180,"Earning Online":120,"Sermons":45,"Other":60}; }
+
+function calcScore(day){
+let w=weights(), t=targets(), total=0;
+for(let a of activities){ let v=(day[a]||0)/60; total+=Math.min(v/t[a],1)*w[a]; }
+return Math.round(total*100);
+}
+
+function grade(s){ if(s>=90)return"A"; if(s>=80)return"B"; if(s>=70)return"C"; if(s>=60)return"D"; return"F"; }
+
+async function loadData(){
+let doc=await db.collection('users').doc(userId).get();
+if(!doc.exists) return;
+let raw=doc.data();
+
+let days={};
+for(let key in raw){
+if(key.includes('.')){
+let [date,act]=key.split('.');
+if(!days[date]) days[date]={};
+days[date][act]=raw[key];
+}}
+
+let dates=Object.keys(days).sort();
+if(dates.length===0) return;
+
+let today=dates[dates.length-1];
+let todayScore=calcScore(days[today]);
+dailyScore.innerText="Daily: "+todayScore+"%";
+
+let last7=dates.slice(-7);
+let sum=0; last7.forEach(d=> sum+=calcScore(days[d]));
+let weekly=Math.round(sum/last7.length);
+weeklyScore.innerText="Weekly Avg: "+weekly+"%";
+let g=grade(weekly);
+grade.innerText="Grade: "+g;
+
+renderChart(last7.map(d=>calcScore(days[d])), last7);
+advancedInsights(days, dates);
+identityEngine(days, dates);
+predictFuture(days, dates);
+}
+
+function renderChart(scores, labels){
+new Chart(chart,{type:'line',data:{labels:labels,datasets:[{label:'Score Trend',data:scores}]}});
+}
+
+function advancedInsights(days, dates){
+if(dates.length<8){ insight.innerText="Collecting data..."; return; }
+let last7=dates.slice(-7);
+let prev7=dates.slice(-14,-7);
+let avg=a=>a.reduce((x,y)=>x+y,0)/a.length;
+let lastAvg=avg(last7.map(d=>calcScore(days[d])));
+let prevAvg=avg(prev7.map(d=>calcScore(days[d])));
+let msg="";
+msg += lastAvg < prevAvg ? "Discipline declining. " : "Improving trend. ";
+
+let high=['Prayer','Bible Study'], low=['Other','Sermons'];
+let highTime=0, lowTime=0;
+last7.forEach(d=>{ high.forEach(a=>highTime+=(days[d][a]||0)); low.forEach(a=>lowTime+=(days[d][a]||0)); });
+if(lowTime > highTime) msg += "Priority misalignment detected. ";
+
+activities.forEach(a=>{
+let last=avg(last7.map(d=>(days[d][a]||0)));
+let prev=avg(prev7.map(d=>(days[d][a]||0)));
+if(prev>0 && (last/prev)<0.7) msg += a+" dropped. ";
+});
+
+insight.innerText=msg;
+}
+
+function identityEngine(days, dates){
+let last7=dates.slice(-7);
+let scores=last7.map(d=>calcScore(days[d]));
+let avg=scores.reduce((a,b)=>a+b,0)/scores.length;
+
+let identityMsg="";
+if(avg>=85) identityMsg="You are becoming highly disciplined.";
+else if(avg>=70) identityMsg="You are moderately consistent.";
+else if(avg>=60) identityMsg="You are struggling with consistency.";
+else identityMsg="Your current pattern reflects inconsistency.";
+
+identity.innerText=identityMsg;
+}
+
+function predictFuture(days, dates){
+if(dates.length<10){ prediction.innerText="Insufficient data for prediction."; return; }
+let last7=dates.slice(-7);
+let scores=last7.map(d=>calcScore(days[d]));
+let trend=scores[scores.length-1] - scores[0];
+
+let msg="";
+if(trend>5) msg="If sustained, you are heading toward high performance.";
+else if(trend<-5) msg="Current trajectory leads to decline.";
+else msg="Stable pattern detected.";
+
+prediction.innerText=msg;
+}
+</script>
+
+</body>
+</html>
